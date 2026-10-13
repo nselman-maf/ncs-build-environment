@@ -1,0 +1,74 @@
+name: Publish NCS Build Image
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-22.04
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # 1. Get Nordic's official Docker build files
+      - name: Get NCS v2.9.0
+        run: |
+          git clone --depth 1 \
+            --branch v2.9.0 \
+            https://github.com/nrfconnect/sdk-nrf.git \
+            ncs-sdk
+
+      # 2. Build the official matching toolchain
+      - name: Build Nordic toolchain image
+        run: |
+          TOOLCHAIN_ID=$(bash \
+            ncs-sdk/scripts/print_toolchain_checksum.sh)
+
+          echo "Toolchain ID: $TOOLCHAIN_ID"
+
+          docker build \
+            -f ncs-sdk/scripts/docker/Dockerfile \
+            --build-arg VERSION="$TOOLCHAIN_ID" \
+            -t ncs-toolchain:2.9.0 \
+            ncs-sdk/scripts/docker
+
+      # 3. Build our custom SDK image
+      - name: Build custom NCS image
+        run: |
+          OWNER="${GITHUB_REPOSITORY_OWNER,,}"
+          IMAGE="ghcr.io/$OWNER/ncs-nrf52840-build:v2.9.0-r1"
+
+          docker build \
+            -f Dockerfile \
+            --build-arg BASE_IMAGE=ncs-toolchain:2.9.0 \
+            --build-arg SOURCE_REPOSITORY="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}" \
+            -t "$IMAGE" \
+            .
+
+          echo "IMAGE=$IMAGE" >> "$GITHUB_ENV"
+
+      # 4. Authenticate to GitHub Container Registry
+      - name: Login to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # 5. Publish the image
+      - name: Push Docker image
+        run: |
+          docker push "$IMAGE"
+
+      # 6. Display immutable image identifier
+      - name: Get published image digest
+        run: |
+          docker pull "$IMAGE"
+
+          docker image inspect "$IMAGE" \
+            --format '{{index .RepoDigests 0}}'
